@@ -1,4 +1,4 @@
-package github
+package bitbucketserver
 
 import (
 	"encoding/json"
@@ -151,23 +151,28 @@ func transformPullRequestEvent(pullRequest PullRequestEventModel) hookCommon.Tra
 	}
 }
 
-func detectContentTypeAndEventID(header http.Header) (string, string, error) {
+func detectContentTypeAttemptNumberAndEventKey(header http.Header) (string, string, string, error) {
 	contentType, err := httputil.GetSingleValueFromHeader("Content-Type", header)
 	if err != nil {
-		return "", "", fmt.Errorf("Issue with Content-Type Header: %s", err)
+		return "", "", "", fmt.Errorf("Issue with Content-Type Header: %s", err)
 	}
 
-	ghEvent, err := httputil.GetSingleValueFromHeader("X-Github-Event", header)
+	eventKey, err := httputil.GetSingleValueFromHeader("X-Event-Key", header)
 	if err != nil {
-		return "", "", fmt.Errorf("Issue with X-Github-Event Header: %s", err)
+		return "", "", "", fmt.Errorf("Issue with X-Event-Key Header: %s", err)
 	}
 
-	return contentType, ghEvent, nil
+	attemptNum, err := httputil.GetSingleValueFromHeader("X-Attempt-Number", header)
+	if err != nil {
+		return "", "", "", fmt.Errorf("Issue with X-Attempt-Number Header: %s", err)
+	}
+
+	return contentType, attemptNum, eventKey, nil
 }
 
 // TransformRequest ...
 func (hp HookProvider) TransformRequest(r *http.Request) hookCommon.TransformResultModel {
-	contentType, ghEvent, err := detectContentTypeAndEventID(r.Header)
+	contentType, ghEvent, err := detectContentTypeAttemptNumberAndEventKey(r.Header)
 	if err != nil {
 		return hookCommon.TransformResultModel{
 			Error: fmt.Errorf("Issue with Headers: %s", err),
@@ -187,9 +192,9 @@ func (hp HookProvider) TransformRequest(r *http.Request) hookCommon.TransformRes
 		}
 	}
 	if ghEvent != "push" && ghEvent != "pull_request" {
-		// Unsupported GitHub Event
+		// Unsupported Bitbucket Server Event
 		return hookCommon.TransformResultModel{
-			Error: fmt.Errorf("Unsupported GitHub Webhook event: %s", ghEvent),
+			Error: fmt.Errorf("Unsupported Bitbucket Server Webhook event: %s", ghEvent),
 		}
 	}
 
@@ -244,7 +249,7 @@ func (hp HookProvider) TransformRequest(r *http.Request) hookCommon.TransformRes
 	}
 
 	return hookCommon.TransformResultModel{
-		Error: fmt.Errorf("Unsupported GitHub event type: %s", ghEvent),
+		Error: fmt.Errorf("Unsupported Bitbucket Server event type: %s", ghEvent),
 	}
 }
 
