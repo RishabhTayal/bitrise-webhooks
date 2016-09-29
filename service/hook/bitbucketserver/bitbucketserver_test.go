@@ -1,4 +1,4 @@
-package github
+package bitbucketserver
 
 import (
 	"io/ioutil"
@@ -7,128 +7,127 @@ import (
 	"testing"
 
 	"github.com/bitrise-io/bitrise-webhooks/bitriseapi"
-	"github.com/bitrise-io/go-utils/pointers"
 	"github.com/stretchr/testify/require"
 )
 
 const (
 	sampleCodePushData = `{
-  "ref": "refs/heads/master",
-  "deleted": false,
-  "head_commit": {
-    "distinct": true,
-    "id": "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-    "message": "re-structuring Hook Providers, with added tests"
-  }
-}`
-
-	samplePullRequestData = `{
-  "action": "opened",
-  "number": 12,
-  "pull_request": {
-    "head": {
-      "ref": "feature/github-pr",
-      "sha": "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-      "private": false,
-      "ssh_url": "git@github.com:bitrise-io/bitrise-webhooks.git",
-      "clone_url": "https://github.com/bitrise-io/bitrise-webhooks.git"
-    },
-    "base": {
-      "ref": "master",
-      "sha": "3c86b996d8014000a93f3c202fc0963e81e56c4c",
-      "private": false,
-      "ssh_url": "git@github.com:bitrise-io/bitrise-webhooks.git",
-      "clone_url": "https://github.com/bitrise-io/bitrise-webhooks.git"
-    },
-    "title": "PR test",
-    "body": "PR text body",
-    "merged": false,
-    "mergeable": true
-  }
+"push": {
+	"changes": [
+		{
+			"new": {
+				"name": "master",
+				"type": "branch",
+				"target": {
+					"type": "commit",
+					"message": "auto-test",
+					"hash": "966d0bfe79b80f97268c2f6bb45e65e79ef09b31"
+				}
+			}
+		},
+		{
+			"new": {
+				"name": "test",
+				"type": "branch",
+				"target": {
+					"type": "commit",
+					"message": "auto-test 2",
+					"hash": "19934139a2cf799bbd0f5061ab02e4760902e93f"
+				}
+			}
+		}
+	]
+}
 }`
 )
 
-func Test_detectContentTypeAndEventID(t *testing.T) {
+func Test_detectContentTypeAttemptNumberAndEventKey(t *testing.T) {
 	t.Log("Push event - should handle")
 	{
 		header := http.Header{
-			"X-Github-Event": {"push"},
-			"Content-Type":   {"application/json"},
+			"X-Event-Key":      {"repo:push"},
+			"Content-Type":     {"application/json"},
+			"X-Attempt-Number": {"1"},
 		}
-		contentType, ghEvent, err := detectContentTypeAndEventID(header)
+		contentType, attemptNum, eventKey, err := detectContentTypeAttemptNumberAndEventKey(header)
 		require.NoError(t, err)
 		require.Equal(t, "application/json", contentType)
-		require.Equal(t, "push", ghEvent)
+		require.Equal(t, "repo:push", eventKey)
+		require.Equal(t, "1", attemptNum)
 	}
 
-	t.Log("Pull Request event - should handle")
+	t.Log("Unsupported event - will be handled in Transform")
 	{
 		header := http.Header{
-			"X-Github-Event": {"pull_request"},
-			"Content-Type":   {"application/json"},
+			"X-Event-Key":      {"issue:create"},
+			"Content-Type":     {"application/json"},
+			"X-Attempt-Number": {"2"},
 		}
-		contentType, ghEvent, err := detectContentTypeAndEventID(header)
+		contentType, attemptNum, eventKey, err := detectContentTypeAttemptNumberAndEventKey(header)
 		require.NoError(t, err)
 		require.Equal(t, "application/json", contentType)
-		require.Equal(t, "pull_request", ghEvent)
+		require.Equal(t, "issue:create", eventKey)
+		require.Equal(t, "2", attemptNum)
 	}
 
-	t.Log("Ping event")
+	t.Log("Missing X-Event-Key header")
 	{
 		header := http.Header{
-			"X-Github-Event": {"ping"},
-			"Content-Type":   {"application/json"},
+			"Content-Type":     {"application/json"},
+			"X-Attempt-Number": {"1"},
 		}
-		contentType, ghEvent, err := detectContentTypeAndEventID(header)
-		require.NoError(t, err)
-		require.Equal(t, "application/json", contentType)
-		require.Equal(t, "ping", ghEvent)
-	}
-
-	t.Log("Unsupported GH event - will be handled in Transform")
-	{
-		header := http.Header{
-			"X-Github-Event": {"label"},
-			"Content-Type":   {"application/json"},
-		}
-		contentType, ghEvent, err := detectContentTypeAndEventID(header)
-		require.NoError(t, err)
-		require.Equal(t, "application/json", contentType)
-		require.Equal(t, "label", ghEvent)
-	}
-
-	t.Log("Missing X-Github-Event header")
-	{
-		header := http.Header{
-			"Content-Type": {"application/json"},
-		}
-		contentType, ghEvent, err := detectContentTypeAndEventID(header)
-		require.EqualError(t, err, "Issue with X-Github-Event Header: No value found in HEADER for the key: X-Github-Event")
+		contentType, attemptNum, eventKey, err := detectContentTypeAttemptNumberAndEventKey(header)
+		require.EqualError(t, err, "Issue with X-Event-Key Header: No value found in HEADER for the key: X-Event-Key")
 		require.Equal(t, "", contentType)
-		require.Equal(t, "", ghEvent)
+		require.Equal(t, "", eventKey)
+		require.Equal(t, "", attemptNum)
 	}
 
-	t.Log("Missing Content-Type")
+	t.Log("Missing Content-Type header")
 	{
 		header := http.Header{
-			"X-Github-Event": {"push"},
+			"X-Event-Key":      {"repo:push"},
+			"X-Attempt-Number": {"1"},
 		}
-		contentType, ghEvent, err := detectContentTypeAndEventID(header)
+		contentType, attemptNum, eventKey, err := detectContentTypeAttemptNumberAndEventKey(header)
 		require.EqualError(t, err, "Issue with Content-Type Header: No value found in HEADER for the key: Content-Type")
 		require.Equal(t, "", contentType)
-		require.Equal(t, "", ghEvent)
+		require.Equal(t, "", eventKey)
+		require.Equal(t, "", attemptNum)
+	}
+
+	t.Log("Missing X-Attempt-Number header")
+	{
+		header := http.Header{
+			"X-Event-Key":  {"repo:push"},
+			"Content-Type": {"application/json"},
+		}
+		contentType, attemptNum, eventKey, err := detectContentTypeAttemptNumberAndEventKey(header)
+		require.EqualError(t, err, "Issue with X-Attempt-Number Header: No value found in HEADER for the key: X-Attempt-Number")
+		require.Equal(t, "", contentType)
+		require.Equal(t, "", eventKey)
+		require.Equal(t, "", attemptNum)
 	}
 }
 
 func Test_transformCodePushEvent(t *testing.T) {
-	t.Log("Do Transform")
+	t.Log("Do Transform - single change")
 	{
 		codePush := CodePushEventModel{
-			Ref: "refs/heads/master",
-			HeadCommit: CommitModel{
-				Distinct:      true,
-				CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-				CommitMessage: "re-structuring Hook Providers, with added tests",
+			PushInfo: PushInfoModel{
+				Changes: []ChangeInfoModel{
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "master",
+							Target: ChangeItemTargetModel{
+								Type:          "commit",
+								CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+								CommitMessage: "auto-test",
+							},
+						},
+					},
+				},
 			},
 		}
 		hookTransformResult := transformCodePushEvent(codePush)
@@ -137,22 +136,42 @@ func Test_transformCodePushEvent(t *testing.T) {
 		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage: "re-structuring Hook Providers, with added tests",
+					CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+					CommitMessage: "auto-test",
 					Branch:        "master",
 				},
 			},
 		}, hookTransformResult.TriggerAPIParams)
 	}
 
-	t.Log("Not Distinct Head Commit - should trigger a build")
+	t.Log("Do Transform - multiple changes")
 	{
 		codePush := CodePushEventModel{
-			Ref: "refs/heads/master",
-			HeadCommit: CommitModel{
-				Distinct:      false,
-				CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-				CommitMessage: "re-structuring Hook Providers, with added tests",
+			PushInfo: PushInfoModel{
+				Changes: []ChangeInfoModel{
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "master",
+							Target: ChangeItemTargetModel{
+								Type:          "commit",
+								CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+								CommitMessage: "auto-test",
+							},
+						},
+					},
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "test",
+							Target: ChangeItemTargetModel{
+								Type:          "commit",
+								CommitHash:    "178de4f94efbfa99abede5cf0f1868924222839e",
+								CommitMessage: "auto-test 2",
+							},
+						},
+					},
+				},
 			},
 		}
 		hookTransformResult := transformCodePushEvent(codePush)
@@ -161,262 +180,192 @@ func Test_transformCodePushEvent(t *testing.T) {
 		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage: "re-structuring Hook Providers, with added tests",
+					CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+					CommitMessage: "auto-test",
 					Branch:        "master",
 				},
 			},
-		}, hookTransformResult.TriggerAPIParams)
-	}
-
-	t.Log("Missing Commit Hash")
-	{
-		codePush := CodePushEventModel{
-			Ref: "refs/heads/master",
-			HeadCommit: CommitModel{
-				Distinct:      true,
-				CommitMessage: "re-structuring Hook Providers, with added tests",
-			},
-		}
-		hookTransformResult := transformCodePushEvent(codePush)
-		require.EqualError(t, hookTransformResult.Error, "Missing commit hash")
-		require.False(t, hookTransformResult.ShouldSkip)
-		require.Nil(t, hookTransformResult.TriggerAPIParams)
-	}
-
-	t.Log("This is a 'deleted' event")
-	{
-		codePush := CodePushEventModel{
-			Deleted: true,
-			Ref:     "refs/heads/master",
-			HeadCommit: CommitModel{
-				Distinct:      true,
-				CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-				CommitMessage: "re-structuring Hook Providers, with added tests",
-			},
-		}
-		hookTransformResult := transformCodePushEvent(codePush)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "This is a 'Deleted' event, no build can be started")
-		require.Nil(t, hookTransformResult.TriggerAPIParams)
-	}
-
-	t.Log("Not a head ref")
-	{
-		codePush := CodePushEventModel{
-			Ref: "refs/not/head",
-			HeadCommit: CommitModel{
-				Distinct:      true,
-				CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-				CommitMessage: "re-structuring Hook Providers, with added tests",
-			},
-		}
-		hookTransformResult := transformCodePushEvent(codePush)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Ref (refs/not/head) is not a head ref")
-		require.Nil(t, hookTransformResult.TriggerAPIParams)
-	}
-}
-
-func Test_transformPullRequestEvent(t *testing.T) {
-	t.Log("Unsupported Pull Request action")
-	{
-		pullRequest := PullRequestEventModel{
-			Action: "labeled",
-		}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Pull Request action doesn't require a build: labeled")
-	}
-
-	t.Log("Empty Pull Request action")
-	{
-		pullRequest := PullRequestEventModel{}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "No Pull Request action specified")
-	}
-
-	t.Log("Already Merged")
-	{
-		pullRequest := PullRequestEventModel{
-			Action: "opened",
-			PullRequestInfo: PullRequestInfoModel{
-				Merged: true,
-			},
-		}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Pull Request already merged")
-	}
-
-	t.Log("Not Mergeable")
-	{
-		pullRequest := PullRequestEventModel{
-			Action: "reopened",
-			PullRequestInfo: PullRequestInfoModel{
-				Merged:    false,
-				Mergeable: pointers.NewBoolPtr(false),
-			},
-		}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Pull Request is not mergeable")
-	}
-
-	t.Log("Mergeable: not yet decided")
-	{
-		pullRequest := PullRequestEventModel{
-			Action:        "synchronize",
-			PullRequestID: 12,
-			PullRequestInfo: PullRequestInfoModel{
-				Title:     "PR test",
-				Merged:    false,
-				Mergeable: nil,
-				HeadBranchInfo: BranchInfoModel{
-					Ref:        "feature/github-pr",
-					CommitHash: "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					Private:    false,
-					SSHURL:     "git@github.com:bitrise-io/bitrise-webhooks.git",
-					CloneURL:   "https://github.com/bitrise-io/bitrise-webhooks.git",
-				},
-				BaseBranchInfo: BranchInfoModel{
-					Ref:        "master",
-					CommitHash: "3c86b996d8014000a93f3c202fc0963e81e56c4c",
-					Private:    false,
-					SSHURL:     "git@github.com:bitrise-io/bitrise-webhooks.git",
-					CloneURL:   "https://github.com/bitrise-io/bitrise-webhooks.git",
-				},
-			},
-		}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
-		require.False(t, hookTransformResult.ShouldSkip)
-		require.NoError(t, hookTransformResult.Error)
-		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:               "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage:            "PR test",
-					Branch:                   "feature/github-pr",
-					BranchDest:               "master",
-					PullRequestID:            pointers.NewIntPtr(12),
-					PullRequestRepositoryURL: "https://github.com/bitrise-io/bitrise-webhooks.git",
-					PullRequestMergeBranch:   "pull/12/merge",
+					CommitHash:    "178de4f94efbfa99abede5cf0f1868924222839e",
+					CommitMessage: "auto-test 2",
+					Branch:        "test",
 				},
 			},
 		}, hookTransformResult.TriggerAPIParams)
 	}
 
-	t.Log("Mergeable: true")
+	t.Log("One of the changes is not a type=branch change")
 	{
-		pullRequest := PullRequestEventModel{
-			Action:        "synchronize",
-			PullRequestID: 12,
-			PullRequestInfo: PullRequestInfoModel{
-				Title:     "PR test",
-				Merged:    false,
-				Mergeable: pointers.NewBoolPtr(true),
-				HeadBranchInfo: BranchInfoModel{
-					Ref:        "feature/github-pr",
-					CommitHash: "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					Private:    false,
-					SSHURL:     "git@github.com:bitrise-io/bitrise-webhooks.git",
-					CloneURL:   "https://github.com/bitrise-io/bitrise-webhooks.git",
-				},
-				BaseBranchInfo: BranchInfoModel{
-					Ref:        "master",
-					CommitHash: "3c86b996d8014000a93f3c202fc0963e81e56c4c",
-					Private:    false,
-					SSHURL:     "git@github.com:bitrise-io/bitrise-webhooks.git",
-					CloneURL:   "https://github.com/bitrise-io/bitrise-webhooks.git",
+		codePush := CodePushEventModel{
+			PushInfo: PushInfoModel{
+				Changes: []ChangeInfoModel{
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "tag",
+							Name: "1.0.0",
+							Target: ChangeItemTargetModel{
+								Type:          "commit",
+								CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+								CommitMessage: "auto-test",
+							},
+						},
+					},
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "test",
+							Target: ChangeItemTargetModel{
+								Type:          "commit",
+								CommitHash:    "178de4f94efbfa99abede5cf0f1868924222839e",
+								CommitMessage: "auto-test 2",
+							},
+						},
+					},
 				},
 			},
 		}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
+		hookTransformResult := transformCodePushEvent(codePush)
 		require.NoError(t, hookTransformResult.Error)
 		require.False(t, hookTransformResult.ShouldSkip)
 		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:               "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage:            "PR test",
-					Branch:                   "feature/github-pr",
-					BranchDest:               "master",
-					PullRequestID:            pointers.NewIntPtr(12),
-					PullRequestRepositoryURL: "https://github.com/bitrise-io/bitrise-webhooks.git",
-					PullRequestMergeBranch:   "pull/12/merge",
+					CommitHash:    "178de4f94efbfa99abede5cf0f1868924222839e",
+					CommitMessage: "auto-test 2",
+					Branch:        "test",
 				},
 			},
 		}, hookTransformResult.TriggerAPIParams)
 	}
 
-	t.Log("Pull Request - Title & Body")
+	t.Log("One of the changes is not a type=commit change")
 	{
-		pullRequest := PullRequestEventModel{
-			Action:        "opened",
-			PullRequestID: 12,
-			PullRequestInfo: PullRequestInfoModel{
-				Title:     "PR test",
-				Body:      "PR text body",
-				Merged:    false,
-				Mergeable: pointers.NewBoolPtr(true),
-				HeadBranchInfo: BranchInfoModel{
-					Ref:        "feature/github-pr",
-					CommitHash: "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					Private:    false,
-					SSHURL:     "git@github.com:bitrise-io/bitrise-webhooks.git",
-					CloneURL:   "https://github.com/bitrise-io/bitrise-webhooks.git",
-				},
-				BaseBranchInfo: BranchInfoModel{
-					Ref:        "master",
-					CommitHash: "3c86b996d8014000a93f3c202fc0963e81e56c4c",
-					Private:    false,
-					SSHURL:     "git@github.com:bitrise-io/bitrise-webhooks.git",
-					CloneURL:   "https://github.com/bitrise-io/bitrise-webhooks.git",
+		codePush := CodePushEventModel{
+			PushInfo: PushInfoModel{
+				Changes: []ChangeInfoModel{
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "master",
+							Target: ChangeItemTargetModel{
+								Type:          "not-commit",
+								CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+								CommitMessage: "auto-test",
+							},
+						},
+					},
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "test",
+							Target: ChangeItemTargetModel{
+								Type:          "commit",
+								CommitHash:    "178de4f94efbfa99abede5cf0f1868924222839e",
+								CommitMessage: "auto-test 2",
+							},
+						},
+					},
 				},
 			},
 		}
-		hookTransformResult := transformPullRequestEvent(pullRequest)
+		hookTransformResult := transformCodePushEvent(codePush)
 		require.NoError(t, hookTransformResult.Error)
 		require.False(t, hookTransformResult.ShouldSkip)
 		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:               "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage:            "PR test\n\nPR text body",
-					Branch:                   "feature/github-pr",
-					BranchDest:               "master",
-					PullRequestID:            pointers.NewIntPtr(12),
-					PullRequestRepositoryURL: "https://github.com/bitrise-io/bitrise-webhooks.git",
-					PullRequestMergeBranch:   "pull/12/merge",
+					CommitHash:    "178de4f94efbfa99abede5cf0f1868924222839e",
+					CommitMessage: "auto-test 2",
+					Branch:        "test",
 				},
 			},
 		}, hookTransformResult.TriggerAPIParams)
+	}
+
+	t.Log("Not a Branch code push event")
+	{
+		codePush := CodePushEventModel{
+			PushInfo: PushInfoModel{
+				Changes: []ChangeInfoModel{
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "tag",
+							Name: "1.0.0",
+						},
+					},
+				},
+			},
+		}
+		hookTransformResult := transformCodePushEvent(codePush)
+		require.EqualError(t, hookTransformResult.Error, "'changes' specified in the webhook, but none can be transformed into a build. Collected errors: [Not a type=branch change. Type was: tag]")
+		require.False(t, hookTransformResult.ShouldSkip)
+		require.Nil(t, hookTransformResult.TriggerAPIParams)
+	}
+
+	t.Log("Not a 'Commit' type change")
+	{
+		codePush := CodePushEventModel{
+			PushInfo: PushInfoModel{
+				Changes: []ChangeInfoModel{
+					{
+						ChangeNewItem: ChangeItemModel{
+							Type: "branch",
+							Name: "master",
+							Target: ChangeItemTargetModel{
+								Type: "unsupported-type",
+							},
+						},
+					},
+				},
+			},
+		}
+		hookTransformResult := transformCodePushEvent(codePush)
+		require.EqualError(t, hookTransformResult.Error, "'changes' specified in the webhook, but none can be transformed into a build. Collected errors: [Target: Not a type=commit change. Type was: unsupported-type]")
+		require.False(t, hookTransformResult.ShouldSkip)
+		require.Nil(t, hookTransformResult.TriggerAPIParams)
 	}
 }
 
 func Test_HookProvider_TransformRequest(t *testing.T) {
 	provider := HookProvider{}
 
-	t.Log("Ping - should be skipped")
+	t.Log("It's a re-try (X-Attempt-Number >= 2) - skip")
 	{
 		request := http.Request{
 			Header: http.Header{
-				"Content-Type":   {"application/json"},
-				"X-Github-Event": {"ping"},
+				"X-Event-Key":      {"repo:push"},
+				"Content-Type":     {"application/json"},
+				"X-Attempt-Number": {"2"},
 			},
 		}
 		hookTransformResult := provider.TransformRequest(&request)
-		require.True(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Ping event received")
+		require.EqualError(t, hookTransformResult.Error, "No retry is supported (X-Attempt-Number: 2)")
+		require.False(t, hookTransformResult.ShouldSkip)
+		require.Nil(t, hookTransformResult.TriggerAPIParams)
 	}
 
-	t.Log("Unsuported Content-Type")
+	t.Log("Unsupported Event Type")
 	{
 		request := http.Request{
 			Header: http.Header{
-				"Content-Type":   {"not/supported"},
-				"X-Github-Event": {"ping"},
+				"X-Event-Key":      {"not:supported"},
+				"Content-Type":     {"application/json"},
+				"X-Attempt-Number": {"1"},
+			},
+		}
+		hookTransformResult := provider.TransformRequest(&request)
+		require.False(t, hookTransformResult.ShouldSkip)
+		require.EqualError(t, hookTransformResult.Error, "X-Event-Key is not supported: not:supported")
+	}
+
+	t.Log("Unsupported Content-Type")
+	{
+		request := http.Request{
+			Header: http.Header{
+				"X-Event-Key":      {"repo:push"},
+				"Content-Type":     {"not/supported"},
+				"X-Attempt-Number": {"1"},
 			},
 		}
 		hookTransformResult := provider.TransformRequest(&request)
@@ -424,51 +373,13 @@ func Test_HookProvider_TransformRequest(t *testing.T) {
 		require.EqualError(t, hookTransformResult.Error, "Content-Type is not supported: not/supported")
 	}
 
-	t.Log("Unsupported event type - should error")
-	{
-		request := http.Request{
-			Header: http.Header{
-				"Content-Type":   {"application/json"},
-				"X-Github-Event": {"label"},
-			},
-		}
-		hookTransformResult := provider.TransformRequest(&request)
-		require.False(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Unsupported GitHub Webhook event: label")
-	}
-
-	t.Log("Code Push - should not be skipped")
-	{
-		request := http.Request{
-			Header: http.Header{
-				"Content-Type":   {"application/json"},
-				"X-Github-Event": {"push"},
-			},
-		}
-		hookTransformResult := provider.TransformRequest(&request)
-		require.False(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Failed to read content of request body: no or empty request body")
-	}
-
-	t.Log("Pull Request - should not be skipped")
-	{
-		request := http.Request{
-			Header: http.Header{
-				"Content-Type":   {"application/json"},
-				"X-Github-Event": {"pull_request"},
-			},
-		}
-		hookTransformResult := provider.TransformRequest(&request)
-		require.False(t, hookTransformResult.ShouldSkip)
-		require.EqualError(t, hookTransformResult.Error, "Failed to read content of request body: no or empty request body")
-	}
-
 	t.Log("No Request Body")
 	{
 		request := http.Request{
 			Header: http.Header{
-				"Content-Type":   {"application/json"},
-				"X-Github-Event": {"push"},
+				"X-Event-Key":      {"repo:push"},
+				"Content-Type":     {"application/json"},
+				"X-Attempt-Number": {"1"},
 			},
 		}
 		hookTransformResult := provider.TransformRequest(&request)
@@ -476,12 +387,13 @@ func Test_HookProvider_TransformRequest(t *testing.T) {
 		require.EqualError(t, hookTransformResult.Error, "Failed to read content of request body: no or empty request body")
 	}
 
-	t.Log("Code Push - should be handled")
+	t.Log("Test with Sample Code Push data")
 	{
 		request := http.Request{
 			Header: http.Header{
-				"X-Github-Event": {"push"},
-				"Content-Type":   {"application/json"},
+				"X-Event-Key":      {"repo:push"},
+				"Content-Type":     {"application/json"},
+				"X-Attempt-Number": {"1"},
 			},
 			Body: ioutil.NopCloser(strings.NewReader(sampleCodePushData)),
 		}
@@ -491,22 +403,30 @@ func Test_HookProvider_TransformRequest(t *testing.T) {
 		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:    "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage: "re-structuring Hook Providers, with added tests",
+					CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+					CommitMessage: "auto-test",
 					Branch:        "master",
+				},
+			},
+			{
+				BuildParams: bitriseapi.BuildParamsModel{
+					CommitHash:    "19934139a2cf799bbd0f5061ab02e4760902e93f",
+					CommitMessage: "auto-test 2",
+					Branch:        "test",
 				},
 			},
 		}, hookTransformResult.TriggerAPIParams)
 	}
 
-	t.Log("Pull Request - should be handled")
+	t.Log("X-Attempt-Number=1 - OK")
 	{
 		request := http.Request{
 			Header: http.Header{
-				"X-Github-Event": {"pull_request"},
-				"Content-Type":   {"application/json"},
+				"X-Event-Key":      {"repo:push"},
+				"Content-Type":     {"application/json"},
+				"X-Attempt-Number": {"1"},
 			},
-			Body: ioutil.NopCloser(strings.NewReader(samplePullRequestData)),
+			Body: ioutil.NopCloser(strings.NewReader(sampleCodePushData)),
 		}
 		hookTransformResult := provider.TransformRequest(&request)
 		require.NoError(t, hookTransformResult.Error)
@@ -514,15 +434,34 @@ func Test_HookProvider_TransformRequest(t *testing.T) {
 		require.Equal(t, []bitriseapi.TriggerAPIParamsModel{
 			{
 				BuildParams: bitriseapi.BuildParamsModel{
-					CommitHash:               "83b86e5f286f546dc5a4a58db66ceef44460c85e",
-					CommitMessage:            "PR test\n\nPR text body",
-					Branch:                   "feature/github-pr",
-					BranchDest:               "master",
-					PullRequestID:            pointers.NewIntPtr(12),
-					PullRequestRepositoryURL: "https://github.com/bitrise-io/bitrise-webhooks.git",
-					PullRequestMergeBranch:   "pull/12/merge",
+					CommitHash:    "966d0bfe79b80f97268c2f6bb45e65e79ef09b31",
+					CommitMessage: "auto-test",
+					Branch:        "master",
+				},
+			},
+			{
+				BuildParams: bitriseapi.BuildParamsModel{
+					CommitHash:    "19934139a2cf799bbd0f5061ab02e4760902e93f",
+					CommitMessage: "auto-test 2",
+					Branch:        "test",
 				},
 			},
 		}, hookTransformResult.TriggerAPIParams)
+	}
+
+	t.Log("X-Attempt-Number=2 - SKIP")
+	{
+		request := http.Request{
+			Header: http.Header{
+				"X-Event-Key":      {"repo:push"},
+				"Content-Type":     {"application/json"},
+				"X-Attempt-Number": {"2"},
+			},
+			Body: ioutil.NopCloser(strings.NewReader(sampleCodePushData)),
+		}
+		hookTransformResult := provider.TransformRequest(&request)
+		require.EqualError(t, hookTransformResult.Error, "No retry is supported (X-Attempt-Number: 2)")
+		require.False(t, hookTransformResult.ShouldSkip)
+		require.Nil(t, hookTransformResult.TriggerAPIParams)
 	}
 }
